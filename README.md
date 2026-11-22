@@ -4,19 +4,28 @@ Bootloader unlock and SIM/network unlock scripts for the **Motorola Moto G Power
 
 ## Supported Device and Starting State
 
-Only tested on this exact Tracfone firmware build. Newer OTA updates may change `lk` or `md1img` offsets and break these steps:
+Two builds are recognized. Only April is hash-pinned. June is a candidate profile with no static modem offsets.
 
-- **Model / SKU / Carrier:** `moto g power - 2026` (`vegas26`) / `XT2617V` / `tracfone`
-- **Android / Security Patch:** Android `16` / `2026-04-01`
-- **Build ID (`ro.build.display.id`):** `W1WEOS36.48-22-3-3-4-2`
-- **Baseband (`gsm.version.baseband`):** `MT6835O_NR17.RC.MP.V18.6.6.P107.02.309R`
-- **Stock active slot:** `_a`
+| | April (verified-live) | June (candidate, not verified) |
+| --- | --- | --- |
+| Profile | `modem/profiles/vegas.json` | `modem/profiles/vegas-june.json` |
+| Model / SKU | `moto g power - 2026` (`vegas26`) / `XT2617V` | same |
+| Carrier seen | Tracfone | Straight Talk |
+| Android / patch | Android `16` / `2026-04-01` | Android `16` / `2026-06-01` |
+| Build ID | `W1WEOS36.48-22-3-3-4-2` | `W1WEOS36.48-22-3-3-4-3` |
+| Fingerprint | (April stock) | `motorola/vegas_og_sys/vegas26:16/W1WEOS36.48-22-3-3-4-3/7806ed-c4dcce:user/release-keys` |
+| Kernel | (April stock) | `5.15.189-android13-8-00018-g9c82b71884fd-ab14885418` |
+| Baseband | `MT6835O_NR17.RC.MP.V18.6.6.P107.02.309R` | not pinned |
+| Slot | `_a` | `_a` |
+| Modem patches | 8 static offsets | none — relocate from the image, or refuse |
+
+Newer OTAs can still move `lk` or `md1img` and break either path.
 
 This guide assumes your device is already:
 
-1. Running `W1WEOS36.48-22-3-3-4-2`.
+1. Running `W1WEOS36.48-22-3-3-4-2`, or the June candidate `W1WEOS36.48-22-3-3-4-3` with the extra flags below.
 2. Activated or activation-bypassed.
-3. Rooted using **DirtyFrag** + **KernelSU**.
+3. Rooted using **DirtyFrag** + **KernelSU** (or an equivalent `uid=0` shell).
 
 **Factory / Rescue Firmware:** If you have a stock factory/rescue firmware package for `W1WEOS36.48-22-3-3-4-2` containing `lk` (`lk.img`/`lk.bin`) and `md1img` (`md1img.img`/`md1img.bin`) you can skip DirtyFrag, KernelSU, and Step 1, and pass those extracted files directly to Step 2 and Step 3. 
 
@@ -111,7 +120,15 @@ adb shell getprop ro.build.display.id
 adb shell getprop gsm.version.baseband
 ```
 
-Expected: `W1WEOS36.48-22-3-3-4-2` and `MT6835O_NR17.RC.MP.V18.6.6.P107.02.309R`.
+April expects `W1WEOS36.48-22-3-3-4-2` and `MT6835O_NR17.RC.MP.V18.6.6.P107.02.309R`.
+
+June expects `W1WEOS36.48-22-3-3-4-3`, security patch `2026-06-01`, and fingerprint `motorola/vegas_og_sys/vegas26:16/W1WEOS36.48-22-3-3-4-3/7806ed-c4dcce:user/release-keys`. Confirm with:
+
+```bash
+adb shell getprop ro.build.version.security_patch
+adb shell getprop ro.build.fingerprint
+adb shell uname -r
+```
 
 ---
 
@@ -223,6 +240,34 @@ fastboot reboot
 
 ---
 
+## Implementing the June build (`W1WEOS36.48-22-3-3-4-3`)
+
+June is wired in and **fails closed**. `vegas-june.json` has `status: candidate-unverified`, `stock_md1img.sha256: null`, and an empty patch list. The April offsets are not applied to it.
+
+What is already known from one Straight Talk `XT2617V` on this build, and what is not:
+
+- `lk` dynamic analysis (`unlock-serial`) produced a CERT-valid image. That image was **not flashed**. Do not treat it as verified-live.
+- Modem offsets for June are **not known**. Do not paste the April `vegas.json` patch table into the June profile.
+
+To implement it on a dump from this build:
+
+```bash
+python bootloader/patch_lk.py --check backups/<BACKUP_DIR>/lk_a.img
+python modem/unlock_vegas.py check --profile modem/profiles/vegas-june.json backups/<BACKUP_DIR>/md1img_a.img
+```
+
+- `lk` `--check` printing `LIKELY COMPATIBLE` means analysis, repack, and CERT verify passed. It does not mean the phone was unlocked.
+- Modem `check` must print `CANDIDATE MATCH`. `INCOMPATIBLE` means stop.
+- Only then build a modem image, still unproven on hardware:
+
+```bash
+python modem/unlock_vegas.py build --experimental-relocate --profile modem/profiles/vegas-june.json backups/<BACKUP_DIR>/md1img_a.img
+```
+
+`build` without `--experimental-relocate` exits. A passing build writes `work/md1img_experimental_patched.signed.img` and `work/modem_work/relocated_profile.json`.
+
+Promote `vegas-june.json` to `verified-live` only after that image is flashed to `md1img_a` and a non-carrier SIM reports `LOADED`. Then copy the measured trimmed size, SHA-256, and the relocated patch list into the profile. Until that happens, leave the hashes null.
+
 ## Checking Newer Firmware or Similar MTK Moto Devices
 
 If your device is on a newer OTA build or is a closely related MediaTek Motorola model:
@@ -283,7 +328,8 @@ vegas-freedom/
     ├── parse_mtk_certs.py
     ├── verify_mtk_image.py
     └── profiles/
-        └── vegas.json
+        ├── vegas.json
+        └── vegas-june.json
 ```
 
 ## Credits and Licenses

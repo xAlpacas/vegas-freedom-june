@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Build, check, and audit the SIM/network-unlocked md1img_a for XT2617V (vegas).
 
-Default 'build' is strictly pinned to verified-live W1WEOS36.48-22-3-3-4-2.
-'check' inspects stock/newer/related MTK md1img images (such as newer OTAs or
-Moto G Play 2026 nevada) read-only using md1_dbginfo CATI symbols and opcode
-patterns. '--experimental-relocate' allows building when all 3 CATI symbols,
-all 8 microMIPS32 signatures, compare_built, and CERT2 audit pass cleanly.
+Default 'build' is strictly pinned to verified-live W1WEOS36.48-22-3-3-4-2
+(modem/profiles/vegas.json). The June candidate
+W1WEOS36.48-22-3-3-4-3 lives in modem/profiles/vegas-june.json and has no
+static offsets: pass that profile with --experimental-relocate. 'check'
+inspects stock/newer images read-only using md1_dbginfo CATI symbols and
+opcode patterns. Relocation is allowed only when all 3 CATI symbols, all 8
+microMIPS32 signatures, compare_built, and CERT2 audit pass.
 """
 from __future__ import annotations
 
@@ -29,6 +31,7 @@ import sign_mtk_cert as SMC  # noqa: E402
 
 KNOWN_SIGNED_SHA256 = "f6bd718ffb5c734cdab9e3c9c8c83987bf8e7b71299adb372cf678940b27046a"
 DEFAULT_PROFILE = MODEM_DIR / "profiles" / "vegas.json"
+JUNE_PROFILE = MODEM_DIR / "profiles" / "vegas-june.json"
 MD1ROM_BASE_VA = 0x90000000
 
 CATI_PROLOGUE_SPECS = (
@@ -58,6 +61,34 @@ def load_profile(profile_path: Path) -> dict:
     if not profile_path.is_file():
         raise FileNotFoundError(f"Profile not found: {profile_path}")
     return json.loads(profile_path.read_text(encoding="utf-8"))
+
+
+def profile_build_id(profile: dict) -> str:
+    """Return the firmware id this profile claims, or the verified April id."""
+    return str(profile.get("build_id") or "W1WEOS36.48-22-3-3-4-2")
+
+
+def profile_is_verified(profile: dict) -> bool:
+    """True only for a profile whose status is verified-live."""
+    return str(profile.get("status") or "verified-live") == "verified-live"
+
+
+def stock_expectation(profile: dict) -> tuple[int | None, str | None]:
+    """Return pinned (size, sha256) or (None, None) when the profile is not filled in."""
+    stock = profile.get("stock_md1img") or {}
+    size = stock.get("size")
+    sha = stock.get("sha256")
+    size_i = int(size) if isinstance(size, int) and size > 0 else None
+    sha_s = sha.lower() if isinstance(sha, str) and len(sha) == 64 else None
+    return size_i, sha_s
+
+
+def is_exact_stock(trimmed_len: int, trimmed_sha: str, profile: dict) -> bool:
+    """True when the trimmed image matches a hash actually stored in the profile."""
+    exp_size, exp_sha = stock_expectation(profile)
+    if exp_size is None or exp_sha is None:
+        return False
+    return trimmed_len == exp_size and trimmed_sha == exp_sha
 
 
 def trim_to_mkimg_eof(raw: bytes, quiet: bool = False) -> bytes:
@@ -327,8 +358,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     trimmed = trim_to_mkimg_eof(raw)
     trimmed_sha = sha256_bytes(trimmed)
-    exp_size = int(profile["stock_md1img"]["size"])
-    exp_sha = profile["stock_md1img"]["sha256"].lower()
+    build_id = profile_build_id(profile)
+    exact = is_exact_stock(len(trimmed), trimmed_sha, profile)
 
     with tempfile.TemporaryDirectory(prefix="md1_chk_") as tmp:
         tmp_img = Path(tmp) / "trimmed.img"
@@ -353,17 +384,31 @@ def cmd_check(args: argparse.Namespace) -> int:
     for err in rep_reloc["errors"]:
         print(f"  [ERROR] {err}")
 
-    if len(trimmed) == exp_size and trimmed_sha == exp_sha:
+    if exact and profile_is_verified(profile):
         print()
-        print("Result: COMPATIBLE (VERIFIED-LIVE XT2617V W1WEOS36.48-22-3-3-4-2)")
-        print(f"Run   : python modem/unlock_vegas.py build \"{args.input_md1img}\"")
+        print(f"Result: COMPATIBLE (VERIFIED-LIVE XT2617V {build_id})")
+        print(f"Run   : python modem/unlock_vegas.py build --profile \"{args.profile}\" \"{args.input_md1img}\"")
         return 0
 
     print()
     if ok_reloc:
-        print("Result: CANDIDATE MATCH (UNTESTED ON HARDWARE — 8/8 CATI + microMIPS32 patterns found)")
-        print("Note  : This is not the verified W1WEOS36.48-22-3-3-4-2 build (e.g. newer OTA or Moto G Play 2026).")
-        print(f"Test build (experimental): python modem/unlock_vegas.py build --experimental-relocate \"{args.input_md1img}\"")
+        if not profile_is_verified(profile):
+            print(f"Result: CANDIDATE MATCH ({profile.get('id', 'profile')} / {build_id})")
+            print("Status: profile is not verified-live. Opcode patterns matched; hardware is unproven.")
+            print(f"Measured trimmed size  : {len(trimmed)}")
+            print(f"Measured trimmed SHA256: {trimmed_sha}")
+            print("Record those only after a flashed modem is confirmed. Do not copy the April hash.")
+            print(
+                "Test build: python modem/unlock_vegas.py build --experimental-relocate "
+                f"--profile \"{args.profile}\" \"{args.input_md1img}\""
+            )
+        else:
+            print("Result: CANDIDATE MATCH (UNTESTED ON HARDWARE — 8/8 CATI + microMIPS32 patterns found)")
+            print(f"Note  : This is not the verified {build_id} image (newer OTA or a related MTK Moto).")
+            print(
+                "Test build (experimental): python modem/unlock_vegas.py build "
+                f"--experimental-relocate \"{args.input_md1img}\""
+            )
         return 0
 
     print("Result: INCOMPATIBLE (CATI symbols or microMIPS32 opcodes differ; manual reverse engineering required)")
@@ -387,23 +432,43 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     trimmed = trim_to_mkimg_eof(raw)
     trimmed_sha = sha256_bytes(trimmed)
-    exp_size = int(profile["stock_md1img"]["size"])
-    exp_sha = profile["stock_md1img"]["sha256"].lower()
-    exact_stock = (len(trimmed) == exp_size and trimmed_sha == exp_sha)
+    build_id = profile_build_id(profile)
+    exact_stock = is_exact_stock(len(trimmed), trimmed_sha, profile)
+    patches = list(profile.get("modem_unlock", {}).get("patches") or [])
 
-    if not exact_stock and not args.experimental_relocate:
+    if not profile_is_verified(profile) and not exact_stock and not args.experimental_relocate:
         print(
-            "ERROR: Trimmed stock md1img_a does not match verified XT2617V W1WEOS36.48-22-3-3-4-2 image.\n"
-            f"  Expected: {exp_size} bytes, sha256={exp_sha}\n"
-            f"  Got     : {len(trimmed)} bytes, sha256={trimmed_sha}\n"
-            f"  Tip     : Run 'python modem/unlock_vegas.py check \"{args.input_md1img}\"' to inspect compatibility.",
+            f"ERROR: Profile {profile.get('id')} ({build_id}) is {profile.get('status')}.\n"
+            "  No pinned stock md1img hash, so the April patch table must not be applied.\n"
+            f"  Tip: python modem/unlock_vegas.py check --profile \"{args.profile}\" \"{args.input_md1img}\"\n"
+            "  Then, only if that reports CANDIDATE MATCH:\n"
+            "  python modem/unlock_vegas.py build --experimental-relocate "
+            f"--profile \"{args.profile}\" \"{args.input_md1img}\"",
             file=sys.stderr,
         )
         return 1
 
-    patches = profile["modem_unlock"]["patches"]
+    if not patches and not args.experimental_relocate:
+        print(
+            f"ERROR: Profile {profile.get('id')} has no static modem patches.\n"
+            "  Pass --experimental-relocate so offsets come from this image's CATI table.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not exact_stock and not args.experimental_relocate:
+        exp_size, exp_sha = stock_expectation(profile)
+        print(
+            f"ERROR: Trimmed stock md1img_a does not match pinned {build_id} image.\n"
+            f"  Expected: {exp_size} bytes, sha256={exp_sha}\n"
+            f"  Got     : {len(trimmed)} bytes, sha256={trimmed_sha}\n"
+            f"  Tip     : python modem/unlock_vegas.py check \"{args.input_md1img}\"",
+            file=sys.stderr,
+        )
+        return 1
+
     experimental = False
-    if not exact_stock and args.experimental_relocate:
+    if (not exact_stock or not patches) and args.experimental_relocate:
         ok_reloc, rep_reloc, patches = relocate_patches_via_cati(trimmed)
         print(f"EXPERIMENTAL RELOCATE: dbginfo={rep_reloc['dbginfo_name']}")
         if not ok_reloc:
@@ -432,6 +497,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     if experimental:
         reloc_prof = {
             "schema": 1,
+            "id": profile.get("id"),
+            "build_id": build_id,
             "status": "experimental-cati-relocated-unproven-on-hardware",
             "dbginfo": rep_reloc["dbginfo_name"],
             "stock_md1img": {"size": len(trimmed), "sha256": trimmed_sha},
@@ -476,7 +543,7 @@ def main() -> int:
     p_check = sub.add_parser("check", help="Check md1img compatibility (exact match or CATI/opcode relocation).")
     p_check.add_argument("input_md1img", type=Path, help="Path to stock md1img_a.img / md1img.img / md1img.bin")
     p_check.add_argument("--profile", type=Path, default=DEFAULT_PROFILE,
-                         help=f"Baseline device profile JSON (default: {DEFAULT_PROFILE})")
+                         help=f"Baseline profile JSON (default: {DEFAULT_PROFILE}; June candidate: {JUNE_PROFILE})")
 
     p_build = sub.add_parser("build", help="Trim (if raw 200MB dump), patch, CERT2-sign, and audit md1img_a.")
     p_build.add_argument("input_md1img", type=Path, help="Path to backed-up stock md1img_a.img")
@@ -485,9 +552,9 @@ def main() -> int:
     p_build.add_argument("--work-dir", type=Path, default=None,
                          help="Intermediate directory (default: <output dir>/modem_work)")
     p_build.add_argument("--profile", type=Path, default=DEFAULT_PROFILE,
-                         help=f"Device profile JSON (default: {DEFAULT_PROFILE})")
+                         help=f"Device profile JSON (default: {DEFAULT_PROFILE}; June candidate: {JUNE_PROFILE})")
     p_build.add_argument("--experimental-relocate", action="store_true",
-                         help="Attempt CATI-based relocation if input differs from verified stock (UNTESTED on hardware)")
+                         help="Relocate patches from this image's CATI table. Required for vegas-june.json.")
 
     p_audit = sub.add_parser("audit", help="Run structural + CERT2 digest audit on an md1img file.")
     p_audit.add_argument("image", type=Path, help="Path to md1img image")

@@ -5,6 +5,10 @@ Wraps val-protocol's lk_auto_patch.py and tools/verify_mtk_image.py so all
 analysis artifacts stay in work/ rather than the backup directory. Supports
 --check for dry-run compatibility checks on newer firmware or related MTK
 Motorola devices without writing to work/.
+
+The only hash-pinned lk is April W1WEOS36.48-22-3-3-4-2. June
+W1WEOS36.48-22-3-3-4-3 uses the same dynamic analysis and is not hash-pinned.
+A CERT-valid image on June is a candidate, not a flashed result.
 """
 from __future__ import annotations
 
@@ -22,6 +26,8 @@ KNOWN_STOCK_LK_EOF = 3476784
 KNOWN_PATCHED_LK_SHA256 = "914acfce78939c61a744294ecb686a0865424c36c397878ab6e919be9513eed1"
 KNOWN_PATCHED_LK_SIZE = 3477904
 DEFAULT_SECRET = "Valeria"
+VERIFIED_BUILD = "W1WEOS36.48-22-3-3-4-2"
+JUNE_BUILD = "W1WEOS36.48-22-3-3-4-3"
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -66,7 +72,7 @@ def validate_input_lk(input_path: Path) -> bytes:
 
 
 def is_known_stock_lk(data: bytes, full_hash: str) -> bool:
-    """Return True if data matches either full 16MB or MKIMG-trimmed stock XT2617V lk."""
+    """Return True if data matches either full 16MB or MKIMG-trimmed stock April lk."""
     if full_hash in (KNOWN_STOCK_LK_SHA256, KNOWN_STOCK_LK_TRIMMED_SHA256):
         return True
     return len(data) >= KNOWN_STOCK_LK_EOF and sha256_bytes(data[:KNOWN_STOCK_LK_EOF]) == KNOWN_STOCK_LK_TRIMMED_SHA256
@@ -150,9 +156,11 @@ def main() -> int:
     print(f"Input : {input_path} ({len(data)} bytes)")
     print(f"SHA256: {full_hash}")
     if known_stock:
-        print("Status: Matches verified stock XT2617V (W1WEOS36.48-22-3-3-4-2) lk_a.img")
+        print(f"Status: Matches verified stock XT2617V ({VERIFIED_BUILD}) lk_a.img")
     else:
-        print("Status: Unknown/newer lk build — testing dynamic val-protocol analysis (experimental on untested firmware/devices)")
+        print(f"Status: Not the hash-pinned {VERIFIED_BUILD} lk.")
+        print(f"        {JUNE_BUILD} is a candidate: dynamic val-protocol analysis still runs.")
+        print("        CERT-valid output is not a flashed result. See modem/profiles/vegas-june.json.")
 
     if args.check:
         with tempfile.TemporaryDirectory(prefix="lk_check_") as tmp:
@@ -166,9 +174,12 @@ def main() -> int:
             out_hash = sha256_bytes(out_bytes)
             print()
             if known_stock:
-                print(f"Result: COMPATIBLE (VERIFIED-LIVE build, test sha256={out_hash})")
+                print(f"Result: COMPATIBLE (VERIFIED-LIVE {VERIFIED_BUILD}, test sha256={out_hash})")
             else:
-                print(f"Result: LIKELY COMPATIBLE (experimental — static analysis, patch, repack, and CERT verify passed; test sha256={out_hash})")
+                print(
+                    "Result: LIKELY COMPATIBLE (candidate — analysis, patch, repack, and CERT verify passed; "
+                    f"test sha256={out_hash})"
+                )
                 print(f"To generate the image in work/, run: python bootloader/patch_lk.py \"{args.input_lk}\"")
             return 0
 
@@ -184,7 +195,9 @@ def main() -> int:
     print(f"Size             : {len(out_bytes)} bytes")
     print(f"SHA256           : {out_hash}")
     if out_hash == KNOWN_PATCHED_LK_SHA256:
-        print("Verified         : Exact match to tested XT2617V lk.unlock-serial.img")
+        print(f"Verified         : Exact match to tested XT2617V {VERIFIED_BUILD} lk.unlock-serial.img")
+    elif not known_stock:
+        print(f"Candidate        : Not the {VERIFIED_BUILD} output hash. Do not treat {JUNE_BUILD} as verified-live.")
 
     print()
     print("Next steps:")

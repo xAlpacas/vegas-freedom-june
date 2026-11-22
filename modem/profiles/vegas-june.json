@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "id": "vegas-june",
+  "label": "Moto G Power (2026) XT2617V — Straight Talk, build W1WEOS36.48-22-3-3-4-3",
+  "status": "candidate-unverified",
+  "parent": "vegas",
+  "models": ["moto g power - 2026", "vegas", "vegas26"],
+  "skus": ["XT2617V"],
+  "carrier": "straighttalk",
+  "android": "16",
+  "security_patch": "2026-06-01",
+  "build_id": "W1WEOS36.48-22-3-3-4-3",
+  "fingerprint": "motorola/vegas_og_sys/vegas26:16/W1WEOS36.48-22-3-3-4-3/7806ed-c4dcce:user/release-keys",
+  "kernel": "5.15.189-android13-8-00018-g9c82b71884fd-ab14885418",
+  "baseband_substr": null,
+  "baseband_alt": [],
+  "stock_active_slot": "_a",
+  "securestate": "flashing_unlocked",
+  "stock_md1img": {
+    "size": null,
+    "sha256": null,
+    "note": "Leave null until a trimmed md1img_a from this exact build is measured. Do not copy the April sha256."
+  },
+  "stock_lk": {
+    "sha256": null,
+    "note": "Leave null. April lk hashes in patch_lk.py do not apply to this build."
+  },
+  "never_flash": ["preloader", "gpt", "pgpt", "efuse", "efuseBackup",
+    "seccfg", "nvram", "nvdata", "protect1", "protect2", "md1img_b", "persist"],
+  "modem_unlock": {
+    "slot": "md1img_a",
+    "method": "experimental-relocate",
+    "patches": []
+  },
+  "lk_unlock": {
+    "method": "val-protocol-dynamic",
+    "preset": "unlock-serial",
+    "secret": "Valeria",
+    "status": "analysis-passed-on-one-device-not-flashed",
+    "notes": [
+      "One Straight Talk XT2617V on this build produced a CERT-valid lk.unlock-serial.img via dynamic analysis.",
+      "That image was not flashed. Do not publish its hash here as verified-live."
+    ]
+  },
+  "verify": {
+    "remain_must_stay": "5",
+    "ee_must_stay": "0",
+    "sim_state_unlocked": "LOADED",
+    "sim_state_locked": "NETWORK_LOCKED"
+  },
+  "promote_when": [
+    "python modem/unlock_vegas.py check --profile modem/profiles/vegas-june.json <md1img_a> reports CANDIDATE MATCH",
+    "build --experimental-relocate passes compare_built and CERT2 audit",
+    "the signed image is flashed to md1img_a only, and a non-carrier SIM reports LOADED",
+    "then copy work/modem_work/relocated_profile.json patches plus the trimmed sha256 into this file and set status to verified-live"
+  ]
+}
